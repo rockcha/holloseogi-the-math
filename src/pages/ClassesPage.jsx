@@ -1,4 +1,3 @@
-import TeacherScope from '../components/TeacherScope'
 import ClassTimeSelect from '../components/ClassTimeSelect'
 import ScheduleDialog from '../components/ScheduleDialog'
 import { layoutTimetableItems, SCHEDULE_COLORS } from '../lib/schedule'
@@ -10,7 +9,8 @@ import { toast } from 'sonner'
 
 
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -67,7 +67,10 @@ export default function ClassesPage() {
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const isTimetable = pathname === '/'
-  const [showAll, setShowAll] = useState(false)
+  const [selectedTeacher, setSelectedTeacher] = useState('')
+  const teacherId = selectedTeacher || user?.id
+  const ownView = teacherId === user?.id
+  const [viewingClass, setViewingClass] = useState(null)
   const [params, setParams] = useSearchParams()
   const [localDialogOpen, setLocalDialogOpen] = useState(false)
   const dialogOpen = localDialogOpen || params.get('action') === 'new'
@@ -89,23 +92,32 @@ export default function ClassesPage() {
     },
   })
   const classes = useQuery({
-    queryKey: ['classes', user?.id, showAll],
+    queryKey: ['classes', user?.id, teacherId],
     enabled: Boolean(user && profile.data?.is_teacher),
     refetchOnMount: 'always',
     queryFn: async () => {
-      let request = supabase.from('classes').select('id,teacher_id,name,start_time,end_time,weekdays,color_index,billing_cycle_sessions,billing_amount,billing_start_date,memo').order('start_time')
-      if (!showAll) request = request.eq('teacher_id', user.id)
+      const request = ownView
+        ? supabase.from('classes').select('id,teacher_id,name,start_time,end_time,weekdays,color_index,billing_cycle_sessions,billing_amount,billing_start_date,memo').eq('teacher_id', user.id).order('start_time')
+        : supabase.rpc('get_teacher_timetable', { selected_teacher_id: teacherId })
       const { data, error } = await request
       if (error) throw error
       return data
     },
   })
-  const schedules = useQuery({
-    queryKey: ['schedules', user?.id, showAll],
-    enabled: Boolean(isTimetable && user && profile.data?.is_teacher),
+  const teachers = useQuery({
+    queryKey: ['teacher-directory', user?.id],
+    enabled: Boolean(user && profile.data?.is_teacher),
     queryFn: async () => {
-      let request = supabase.from('schedules').select('id,teacher_id,title,start_time,end_time,weekdays,color_index,memo').order('start_time')
-      if (!showAll) request = request.eq('teacher_id', user.id)
+      const { data, error } = await supabase.rpc('get_teacher_directory')
+      if (error) throw error
+      return data
+    },
+  })
+  const schedules = useQuery({
+    queryKey: ['schedules', user?.id, 'own'],
+    enabled: Boolean(isTimetable && ownView && user && profile.data?.is_teacher),
+    queryFn: async () => {
+      const request = supabase.from('schedules').select('id,teacher_id,title,start_time,end_time,weekdays,color_index,memo').eq('teacher_id', user.id).order('start_time')
       const { data, error } = await request
       if (error) throw error
       return data
@@ -113,10 +125,11 @@ export default function ClassesPage() {
   })
   const timetableItems = useMemo(() => [
     ...(classes.data || []).map((item) => ({ ...item, kind: 'class' })),
-    ...(isTimetable ? schedules.data || [] : []).map((item) => ({ ...item, name: item.title, kind: 'schedule' })),
-  ], [classes.data, schedules.data, isTimetable])
+    ...(isTimetable && ownView ? schedules.data || [] : []).map((item) => ({ ...item, name: item.title, kind: 'schedule' })),
+  ], [classes.data, schedules.data, isTimetable, ownView])
   const saveClass = useMutation({
     mutationFn: async (values) => {
+      if (!ownView) throw new Error('본인의 수업만 추가할 수 있어요.')
       const colorIndex = values.color_index ?? 0
       const payload = { teacher_id: user.id, name: values.name.trim(), start_time: values.start_time, end_time: values.end_time, weekdays: values.weekdays, color_index: colorIndex, billing_cycle_sessions: Number(values.billing_cycle_sessions), billing_amount: Number(values.billing_amount), billing_start_date: values.billing_start_date, memo: values.memo.trim() || null }
       const request = editingClass
@@ -146,6 +159,7 @@ export default function ClassesPage() {
   const firstHour = hours[0]
   const calendarHeight = (hours[hours.length - 1] - firstHour) * HOUR_HEIGHT
   const isTeacher = profile.data?.is_teacher === true
+  const canManage = isTeacher && ownView
 
   function toggleDay(day) {
     setForm((current) => ({ ...current, weekdays: current.weekdays.includes(day) ? current.weekdays.filter((value) => value !== day) : [...current.weekdays, day].sort() }))
@@ -172,6 +186,7 @@ export default function ClassesPage() {
   }
 
   function openCreate() {
+    if (!canManage) return
     setEditingClass(null)
     setForm(EMPTY_FORM)
     setDialogOpen(true)
@@ -187,12 +202,18 @@ export default function ClassesPage() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-5">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="dashboard-page-title inline-page-title">{isTimetable ? '시간표' : '수업 리스트'}</h1>
-          <TeacherScope all={showAll} onChange={setShowAll} />
+          <Select value={teacherId || ''} onValueChange={setSelectedTeacher} disabled={!isTeacher}>
+            <SelectTrigger aria-label="선생님 선택" className="w-44 bg-white text-[#305c45]"><SelectValue placeholder="선생님 선택" /></SelectTrigger>
+            <SelectContent position="popper">
+              <SelectItem value={user.id}>{user.user_metadata?.nickname || '나'} (내 수업)</SelectItem>
+              {(teachers.data || []).filter((teacher) => teacher.id !== user.id).map((teacher) => <SelectItem key={teacher.id} value={teacher.id}>{teacher.nickname} 선생님</SelectItem>)}
+            </SelectContent>
+          </Select>
         </div>
         <div className="ml-auto flex items-center gap-2">
-        {isTimetable && <Button type="button" variant="outline" className="h-11 border-[#b9d5c2] px-4 text-[#305c45]" disabled={!isTeacher || schedules.isLoading || schedules.isError} onClick={() => setScheduleDialog({ schedule: null })}><CalendarDays />일정 추가</Button>}
+        {isTimetable && <Button type="button" variant="outline" className="h-11 border-[#b9d5c2] px-4 text-[#305c45]" disabled={!canManage || schedules.isLoading || schedules.isError} onClick={() => setScheduleDialog({ schedule: null })}><CalendarDays />일정 추가</Button>}
         <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open && !saveClass.isPending) { setForm(EMPTY_FORM); setEditingClass(null) } }}>
-          <Button className="h-11 rounded-xl bg-[#305c45] px-4 font-bold text-white hover:bg-[#264c38]" disabled={!isTeacher} onClick={openCreate}><Plus />수업 추가</Button>
+          <Button className="h-11 rounded-xl bg-[#305c45] px-4 font-bold text-white hover:bg-[#264c38]" disabled={!canManage} onClick={openCreate}><Plus />수업 추가</Button>
           <DialogContent aria-describedby={undefined} className="max-h-[calc(100vh-32px)] overflow-y-auto rounded-3xl p-6 sm:max-w-3xl sm:p-8 lg:max-w-4xl">
             <DialogHeader><DialogTitle className="font-display text-2xl font-bold">{editingClass ? '수업 수정' : '새 수업 추가'}</DialogTitle></DialogHeader>
             <form className="mt-5 space-y-5" onSubmit={submit}>
@@ -209,7 +230,7 @@ export default function ClassesPage() {
               </div>
               </div>
               {formError && <p role="status" className="text-xs leading-5 text-[#758078]">{formError}</p>}
-              <DialogFooter className="mx-0 mb-0 mt-7 border-0 bg-transparent p-0"><Button className="h-11 rounded-xl px-5 font-bold" onClick={() => setDialogOpen(false)} type="button" variant="outline">취소</Button><Button className="h-11 rounded-xl bg-[#305c45] px-5 font-bold text-white hover:bg-[#264c38]" disabled={saveClass.isPending || !isTeacher || !requiredFieldsComplete || Boolean(formError)} type="submit">{saveClass.isPending ? '저장 중...' : editingClass ? '변경 저장' : '추가하기'}</Button></DialogFooter>
+              <DialogFooter className="mx-0 mb-0 mt-7 border-0 bg-transparent p-0"><Button className="h-11 rounded-xl px-5 font-bold" onClick={() => setDialogOpen(false)} type="button" variant="outline">취소</Button><Button className="h-11 rounded-xl bg-[#305c45] px-5 font-bold text-white hover:bg-[#264c38]" disabled={saveClass.isPending || !canManage || !requiredFieldsComplete || Boolean(formError)} type="submit">{saveClass.isPending ? '저장 중...' : editingClass ? '변경 저장' : '추가하기'}</Button></DialogFooter>
             </form>
           </DialogContent>
         </Dialog>
@@ -217,26 +238,34 @@ export default function ClassesPage() {
       </div>
 
       {profile.isError && <div className="mb-6 rounded-2xl bg-[#fff2ee] p-4 text-sm text-[#9a4936]">교사 정보를 확인하지 못했어요.</div>}
+      {teachers.isLoading && <p role="status" className="mb-4 text-sm text-[#758078]">선생님 목록을 불러오는 중...</p>}
+      {teachers.isError && <div role="alert" className="mb-4 flex items-center justify-between gap-3 text-sm text-[#9a4936]"><span>선생님 목록을 불러오지 못했어요.</span><Button variant="outline" size="sm" onClick={() => teachers.refetch()}>다시 불러오기</Button></div>}
       {!profile.isLoading && !isTeacher && !profile.isError && <div className="mb-6 rounded-2xl bg-[#fff7df] p-4 text-sm text-[#795f1c]">교사로 승인된 계정만 수업을 관리할 수 있어요.</div>}
 
       {!isTimetable ? <TooltipProvider><section className="class-list-panel">
         <div className="class-list-heading"><span>총 {classes.data?.length ?? 0}개</span><span>요일 · 시간</span></div>
-        {classes.isLoading || profile.isLoading ? <p className="p-12 text-center text-sm text-[#879189]">수업을 불러오는 중...</p> : classes.isError ? <div className="p-12 text-center"><p>수업을 불러오지 못했어요.</p><Button className="mt-4" variant="outline" onClick={() => classes.refetch()}>다시 불러오기</Button></div> : !classes.data?.length ? <div className="p-16 text-center"><BookOpen className="mx-auto mb-4 text-[#a5b6aa]" size={32} /><p className="font-semibold">아직 등록된 수업이 없어요</p><p className="mt-2 text-sm text-[#879189]">첫 수업을 추가하고 시간표를 채워 보세요.</p><Button disabled={!isTeacher} className="mt-5" variant="outline" onClick={openCreate}><Plus size={16} />수업 추가하기</Button></div> : classes.data.map((item) => <Link className="class-list-row" key={item.id} to={'/classes/' + item.id}><span className="class-color" style={{ backgroundColor: CLASS_COLORS[(item.color_index ?? 0) % CLASS_COLORS.length].borderColor }} /><div className="min-w-0 flex-1"><strong className="block truncate">{item.name}</strong>{item.memo && <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="mt-1 block max-w-64 truncate text-xs text-[#879189] focus-visible:outline-2 focus-visible:outline-[#527b65]">{item.memo}</span></TooltipTrigger><TooltipContent side="top" sideOffset={8} className="max-h-72 max-w-[min(360px,calc(100vw-32px))] overflow-y-auto whitespace-pre-wrap break-words border-black bg-black px-3 py-2 text-sm leading-6 text-white [&>svg]:fill-black [&>svg]:bg-black">{item.memo}</TooltipContent></Tooltip>}</div><span className="class-days">{DAYS.filter((day) => item.weekdays.includes(day.value)).map((day) => day.label).join(' · ')}</span><span className="class-time"><Clock3 size={15} />{item.start_time.slice(0, 5)} – {item.end_time.slice(0, 5)}</span><ArrowUpRight size={17} className="text-[#94a097]" /></Link>)}
+        {classes.isLoading || profile.isLoading ? <p className="p-12 text-center text-sm text-[#879189]">수업을 불러오는 중...</p> : classes.isError ? <div className="p-12 text-center"><p>수업을 불러오지 못했어요.</p><Button className="mt-4" variant="outline" onClick={() => classes.refetch()}>다시 불러오기</Button></div> : !classes.data?.length ? <div className="p-16 text-center"><BookOpen className="mx-auto mb-4 text-[#a5b6aa]" size={32} /><p className="font-semibold">아직 등록된 수업이 없어요</p><p className="mt-2 text-sm text-[#879189]">첫 수업을 추가하고 시간표를 채워 보세요.</p><Button disabled={!canManage} className="mt-5" variant="outline" onClick={openCreate}><Plus size={16} />수업 추가하기</Button></div> : classes.data.map((item) => <Link className="class-list-row" key={item.id} to={ownView ? '/classes/' + item.id : '#'} onClick={(event) => { if (!ownView) { event.preventDefault(); setViewingClass(item) } }}><span className="class-color" style={{ backgroundColor: CLASS_COLORS[(item.color_index ?? 0) % CLASS_COLORS.length].borderColor }} /><div className="min-w-0 flex-1"><strong className="block truncate">{item.name}</strong>{item.memo && <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="mt-1 block max-w-64 truncate text-xs text-[#879189] focus-visible:outline-2 focus-visible:outline-[#527b65]">{item.memo}</span></TooltipTrigger><TooltipContent side="top" sideOffset={8} className="max-h-72 max-w-[min(360px,calc(100vw-32px))] overflow-y-auto whitespace-pre-wrap break-words border-black bg-black px-3 py-2 text-sm leading-6 text-white [&>svg]:fill-black [&>svg]:bg-black">{item.memo}</TooltipContent></Tooltip>}</div><span className="class-days">{DAYS.filter((day) => item.weekdays.includes(day.value)).map((day) => day.label).join(' · ')}</span><span className="class-time"><Clock3 size={15} />{item.start_time.slice(0, 5)} – {item.end_time.slice(0, 5)}</span><ArrowUpRight size={17} className="text-[#94a097]" /></Link>)}
       </section></TooltipProvider> : <>
-      {schedules.isError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[#fff2ee] p-4 text-sm text-[#9a4936]"><span>일정을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</span><Button variant="outline" type="button" onClick={() => schedules.refetch()}>다시 불러오기</Button></div>}
-      {!classes.isLoading && !classes.isError && !schedules.isLoading && !schedules.isError && isTeacher && timetableItems.length === 0 && <div className="schedule-empty"><CalendarDays size={19} /><span>등록된 수업이나 일정이 없어요. 위 버튼으로 추가해 주세요.</span></div>}
+      {ownView && schedules.isError && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[#fff2ee] p-4 text-sm text-[#9a4936]"><span>일정을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</span><Button variant="outline" type="button" onClick={() => schedules.refetch()}>다시 불러오기</Button></div>}
+      {!classes.isLoading && !classes.isError && (!ownView || (!schedules.isLoading && !schedules.isError)) && isTeacher && timetableItems.length === 0 && <div className="schedule-empty"><CalendarDays size={19} /><span>등록된 수업이나 일정이 없어요.</span></div>}
       <section className="overflow-hidden rounded-3xl border border-[#e1e7df] bg-white shadow-sm">
         {classes.isLoading ? <p className="p-16 text-center text-sm text-[#879189]">수업을 불러오는 중...</p> : classes.isError ? <div className="p-12 text-center"><p className="font-semibold text-[#a95848]">수업을 불러오지 못했어요.</p><p className="mt-2 text-xs text-[#8e6259]">{classes.error?.message}</p></div> : <TooltipProvider><div className="overflow-x-auto"><div className="w-full min-w-[780px]">
           <div className="grid border-b border-[#e8ece7] bg-[#fafbf9]" style={{ gridTemplateColumns: '56px repeat(7, minmax(0, 1fr))' }}><div className="grid place-items-center text-[10px] font-semibold text-[#a1aaa4]">시간</div>{DAYS.map((day) => <div className={`border-l border-[#edf0eb] py-4 text-center text-sm font-bold ${day.value === 6 ? 'bg-[#f5f8f5] text-[#527b65]' : day.value === 7 ? 'bg-[#fff8f6] text-[#b66b5d]' : ''}`} key={day.value}>{day.label}</div>)}</div>
           <div className="timetable-grid grid" style={{ gridTemplateColumns: '56px repeat(7, minmax(0, 1fr))', '--timetable-grid-offset': `${-(firstHour % 1) * HOUR_HEIGHT}px` }}>
             <div className="relative" style={{ height: calendarHeight }}>{hours.slice(0, -1).map((hour, index) => <span className={`absolute right-3 text-xs text-[#929b95] ${index === 0 ? 'translate-y-1' : '-translate-y-1/2'}`} key={hour} style={{ top: (hour - firstHour) * HOUR_HEIGHT }}>{String(Math.floor(hour)).padStart(2, '0')}:{String(Math.round((hour % 1) * 60)).padStart(2, '0')}</span>)}</div>
-            {DAYS.map((day) => <div className={`relative border-l border-[#edf0eb] bg-[repeating-linear-gradient(to_bottom,transparent_0,transparent_63px,#edf0eb_64px)] ${day.value === 6 ? 'bg-[#fbfdfb]' : day.value === 7 ? 'bg-[#fffcfb]' : ''}`} key={day.value} style={{ height: calendarHeight }}>{layoutTimetableItems(timetableItems.filter((item) => item.weekdays.includes(day.value))).map((item) => { const top = ((toMinutes(item.start_time) - firstHour * 60) / 60) * HOUR_HEIGHT; const height = ((toMinutes(item.end_time) - toMinutes(item.start_time)) / 60) * HOUR_HEIGHT; const color = { backgroundColor: SCHEDULE_COLORS[(item.color_index ?? 0) % SCHEDULE_COLORS.length], color: '#000000' }; return <Tooltip key={item.kind + item.id}><TooltipTrigger asChild><button aria-label={`${item.name} 상세 보기`} className="timetable-class-block absolute flex min-w-0 items-center justify-center overflow-hidden border-0 px-2.5 text-center transition hover:brightness-95 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-[#305c45]" onClick={() => item.kind === 'schedule' ? setScheduleDialog({ schedule: item }) : navigate(`/classes/${item.id}`)} style={{ ...color, boxSizing: 'border-box', left: `${item.lane * 100 / item.laneCount}%`, width: `${100 / item.laneCount}%`, top, height }} type="button"><strong className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-center text-xs">{item.kind === 'schedule' && <CalendarDays aria-hidden="true" className="mr-1 inline-block size-3" />}{item.name}</strong></button></TooltipTrigger><TooltipContent className="border-black bg-black text-white [&>svg]:fill-black [&>svg]:bg-black" side="top" sideOffset={6}><p>{item.kind === 'schedule' ? '일정' : '수업'} · {item.name}</p><p>{item.start_time.slice(0, 5)} – {item.end_time.slice(0, 5)}</p>{item.kind === 'schedule' && item.memo && <p className="mt-1 max-w-64 whitespace-pre-wrap break-words">{item.memo}</p>}</TooltipContent></Tooltip> })}</div>)}
+            {DAYS.map((day) => <div className={`relative border-l border-[#edf0eb] bg-[repeating-linear-gradient(to_bottom,transparent_0,transparent_63px,#edf0eb_64px)] ${day.value === 6 ? 'bg-[#fbfdfb]' : day.value === 7 ? 'bg-[#fffcfb]' : ''}`} key={day.value} style={{ height: calendarHeight }}>{layoutTimetableItems(timetableItems.filter((item) => item.weekdays.includes(day.value))).map((item) => { const top = ((toMinutes(item.start_time) - firstHour * 60) / 60) * HOUR_HEIGHT; const height = ((toMinutes(item.end_time) - toMinutes(item.start_time)) / 60) * HOUR_HEIGHT; const color = { backgroundColor: SCHEDULE_COLORS[(item.color_index ?? 0) % SCHEDULE_COLORS.length], color: '#000000' }; return <Tooltip key={item.kind + item.id}><TooltipTrigger asChild><button aria-label={`${item.name} 상세 보기`} className="timetable-class-block absolute flex min-w-0 items-center justify-center overflow-hidden border-0 px-2.5 text-center transition hover:brightness-95 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-[#305c45]" onClick={() => item.kind === 'schedule' ? setScheduleDialog({ schedule: item }) : ownView ? navigate(`/classes/${item.id}`) : setViewingClass(item)} style={{ ...color, boxSizing: 'border-box', left: `${item.lane * 100 / item.laneCount}%`, width: `${100 / item.laneCount}%`, top, height }} type="button"><strong className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-center text-xs">{item.kind === 'schedule' && <CalendarDays aria-hidden="true" className="mr-1 inline-block size-3" />}{item.name}</strong></button></TooltipTrigger><TooltipContent className="border-black bg-black text-white [&>svg]:fill-black [&>svg]:bg-black" side="top" sideOffset={6}><p>{item.kind === 'schedule' ? '일정' : '수업'} · {item.name}</p><p>{item.start_time.slice(0, 5)} – {item.end_time.slice(0, 5)}</p>{item.kind === 'schedule' && item.memo && <p className="mt-1 max-w-64 whitespace-pre-wrap break-words">{item.memo}</p>}</TooltipContent></Tooltip> })}</div>)}
           </div>
         </div></div></TooltipProvider>}
       </section>
       </>}
     </main>
     {scheduleDialog && <ScheduleDialog schedule={scheduleDialog.schedule} userId={user.id} onClose={() => setScheduleDialog(null)} />}
+    <Dialog open={Boolean(viewingClass)} onOpenChange={(open) => { if (!open) setViewingClass(null) }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader><DialogTitle className="font-display text-xl">{viewingClass?.name}</DialogTitle><DialogDescription>선택한 선생님의 수업 시간입니다.</DialogDescription></DialogHeader>
+        {viewingClass && <div className="space-y-3 text-sm"><p>{DAYS.filter((day) => viewingClass.weekdays.includes(day.value)).map((day) => day.label).join(' · ')}</p><p className="flex items-center gap-2"><Clock3 size={16} />{viewingClass.start_time.slice(0, 5)} – {viewingClass.end_time.slice(0, 5)}</p></div>}
+      </DialogContent>
+    </Dialog>
     
   </div>
 }
