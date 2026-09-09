@@ -1,11 +1,12 @@
 import { NavLink, Outlet, useLocation, Navigate } from 'react-router-dom'
-import { CalendarDays, Users, BookOpen, ClipboardCheck, CreditCard, ChevronRight } from 'lucide-react'
+import { CalendarDays, CalendarRange, Users, BookOpen, ClipboardCheck, CreditCard, ChevronRight } from 'lucide-react'
 import PageHeader from './PageHeader'
 import PersonalNote from './PersonalNote'
 import { useAuth } from '../hooks/useAuth'
 
 const menus = [
   { to: '/', label: '시간표', icon: CalendarDays },
+  { to: '/calendar', label: '일정', icon: CalendarRange },
   { to: '/students', label: '학생', icon: Users, children: [['학생 리스트', '/students'], ['학생 추가', '/students?action=new']] },
   { to: '/classes', label: '수업', icon: BookOpen, children: [['수업 리스트', '/classes'], ['수업 추가하기', '/classes?action=new']] },
   { to: '/attendance', label: '출석', icon: ClipboardCheck, children: [['출석 리스트', '/attendance'], ['출석부 작성하기', '/attendance/new']] },

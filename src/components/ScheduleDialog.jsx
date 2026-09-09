@@ -58,7 +58,7 @@ export default function ScheduleDialog({ schedule, userId, onClose }) {
 
   return <Dialog open onOpenChange={(open) => { if (!open && !busy) onClose() }}>
     <DialogContent className="max-h-[calc(100dvh-32px)] overflow-y-auto p-6 sm:max-w-xl">
-      <DialogHeader><DialogTitle className="font-display text-2xl">{readOnly ? '일정 보기' : schedule ? '일정 수정' : '일정 추가'}</DialogTitle><DialogDescription>선택한 요일마다 시간표에 표시됩니다.</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle className="font-display text-2xl">{readOnly ? '일정 보기' : schedule ? '일정 수정' : '일정 추가'}</DialogTitle><DialogDescription>반복되는 일정을 추가하세요</DialogDescription></DialogHeader>
       <form className="mt-3 space-y-5" onSubmit={(event) => { event.preventDefault(); if (!busy && !readOnly && !error) save.mutate() }}>
         <fieldset disabled={busy || readOnly} className="space-y-5">
           <div className="space-y-2"><Label htmlFor="schedule-title">제목</Label><Input autoFocus id="schedule-title" required maxLength={100} value={form.title} onChange={(event) => update('title', event.target.value)} placeholder="예: 학부모 상담" /></div>

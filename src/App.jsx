@@ -4,6 +4,7 @@ import AuthPage from './components/AuthPage'
 import ClassesPage from './pages/ClassesPage'
 import ClassDetailPage from './pages/ClassDetailPage'
 import HomePage from './pages/HomePage'
+import CalendarPage from './pages/CalendarPage'
 import StudentsPage from './pages/StudentsPage'
 import AttendancePage from './pages/AttendancePage'
 import AttendanceFormPage from './pages/AttendanceFormPage'
@@ -13,6 +14,7 @@ import PaymentsPage from './pages/PaymentsPage'
 export default function App() {
   return <Routes>
     <Route element={<DashboardLayout />}><Route path="/" element={<HomePage />} />
+    <Route path="/calendar" element={<CalendarPage />} />
     <Route path="/students" element={<StudentsPage />} />
     <Route path="/classes" element={<ClassesPage />} />
     <Route path="/classes/:classId" element={<ClassDetailPage />} />
