@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { Plus, Users, Search, StickyNote, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { AlertDialog } from "radix-ui";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { useAuth } from "../hooks/useAuth";
 import { supabase } from "../lib/supabase";
+import { deleteStudentRecord, studentDeleteError } from "../lib/students";
 
 const emptyForm = {
   name: "",
@@ -41,6 +43,7 @@ export default function StudentsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [params, setParams] = useSearchParams();
   const [localDialogOpen, setLocalDialogOpen] = useState(false);
@@ -49,6 +52,7 @@ export default function StudentsPage() {
     if (saveStudent.isPending || deleteStudent.isPending) return;
     setLocalDialogOpen(open);
     if (!open) {
+      setDeleteOpen(false);
       setForm(emptyForm);
       setEditingId(null);
     }
@@ -121,13 +125,10 @@ export default function StudentsPage() {
       if (!profile.data?.is_teacher)
         throw new Error("교사로 등록된 계정만 학생을 삭제할 수 있어요.");
       if (!editingId) throw new Error("삭제할 학생을 찾을 수 없어요.");
-      const { error } = await supabase
-        .from("students")
-        .delete()
-        .eq("id", editingId);
-      if (error) throw error;
+      return deleteStudentRecord(supabase, editingId);
     },
     onSuccess: async () => {
+      setDeleteOpen(false);
       setForm(emptyForm);
       setLocalDialogOpen(false);
       setEditingId(null);
@@ -135,14 +136,13 @@ export default function StudentsPage() {
         queryKey: ["students"],
         type: "active",
       });
+      await queryClient.invalidateQueries({
+        predicate: (query) => ["class", "attendance-classes", "attendance-sheet", "attendance-sheets", "payment-data"].includes(query.queryKey[0]),
+      });
       toast.success("학생을 삭제했어요.");
     },
     onError: (error) => {
-      const message =
-        error.code === "23503"
-          ? "결제 기록이 있는 학생은 삭제할 수 없어요."
-          : error.message || "학생을 삭제하지 못했어요.";
-      toast.error(message);
+      toast.error(studentDeleteError(error));
     },
   });
   const filteredStudents = (students.data || []).filter((student) => {
@@ -150,6 +150,8 @@ export default function StudentsPage() {
     return !term || student.name.toLocaleLowerCase().includes(term);
   });
   function openStudent(student) {
+    deleteStudent.reset();
+    setDeleteOpen(false);
     setEditingId(student?.id ?? null);
     setForm(
       student
@@ -226,7 +228,7 @@ export default function StudentsPage() {
                 }}
               >
                 <fieldset
-                  disabled={saveStudent.isPending}
+                  disabled={saveStudent.isPending || deleteStudent.isPending}
                   className="grid gap-4 sm:grid-cols-2"
                 >
                   <div className="space-y-2 sm:col-span-2">
@@ -318,6 +320,7 @@ export default function StudentsPage() {
                     </p>
                   </div>
                 </fieldset>
+                {deleteStudent.isError && <p role="alert" className="mt-4 text-sm text-[#a95848]">{studentDeleteError(deleteStudent.error)}</p>}
                 <DialogFooter className="mx-0 mb-0 mt-7 border-0 bg-transparent p-0">
                   <div className="mr-auto">
                     {editingId && (
@@ -326,14 +329,7 @@ export default function StudentsPage() {
                         disabled={
                           saveStudent.isPending || deleteStudent.isPending
                         }
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `${form.name || "이 학생"}을(를) 삭제할까요? 관련 출결 기록도 함께 삭제됩니다.`,
-                            )
-                          )
-                            deleteStudent.mutate();
-                        }}
+                        onClick={() => { deleteStudent.reset(); setDeleteOpen(true); }}
                         type="button"
                       >
                         <Trash2 />
@@ -363,6 +359,24 @@ export default function StudentsPage() {
                   </Button>
                 </DialogFooter>
               </form>
+              <AlertDialog.Root open={deleteOpen} onOpenChange={(open) => { if (!deleteStudent.isPending) setDeleteOpen(open); }}>
+                <AlertDialog.Portal>
+                  <AlertDialog.Overlay className="fixed inset-0 z-[60] bg-black/25 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none" />
+                  <AlertDialog.Content onEscapeKeyDown={(event) => { if (deleteStudent.isPending) event.preventDefault(); }} className="fixed left-1/2 top-1/2 z-[61] w-[calc(100%-32px)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-[#e1e7df] bg-white p-6 shadow-xl outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 motion-reduce:animate-none">
+                    <div className="mb-4 flex size-11 items-center justify-center rounded-full bg-[#fbeae7] text-[#b84e43]"><Trash2 size={21} strokeWidth={1.7} aria-hidden="true" /></div>
+                    <AlertDialog.Title className="font-display text-xl font-bold text-[#26372f]">학생을 삭제하시겠습니까?</AlertDialog.Title>
+                    <AlertDialog.Description className="mt-3 text-sm leading-6 text-[#758078]">
+                      <span className="font-semibold text-[#26372f]">{form.name || "이 학생"}</span> 학생 정보와 수강 배정, 출결 기록이 삭제됩니다. 삭제한 정보는 되돌릴 수 없습니다.
+                      <span className="mt-2 block text-xs">결제 기록이 있는 학생은 삭제할 수 없습니다.</span>
+                    </AlertDialog.Description>
+                    {deleteStudent.isError && <p role="alert" className="mt-4 rounded-lg bg-[#fff2ee] p-3 text-sm leading-6 text-[#a95848]">{studentDeleteError(deleteStudent.error)}</p>}
+                    <div className="mt-6 grid grid-cols-2 gap-3">
+                      <AlertDialog.Cancel asChild><Button type="button" variant="outline" className="h-11" disabled={deleteStudent.isPending}>취소</Button></AlertDialog.Cancel>
+                      <Button type="button" className="h-11 bg-[#b84e43] font-semibold text-white hover:bg-[#9f4138]" disabled={deleteStudent.isPending} onClick={() => deleteStudent.mutate()}>{deleteStudent.isPending ? "삭제 중..." : "삭제하기"}</Button>
+                    </div>
+                  </AlertDialog.Content>
+                </AlertDialog.Portal>
+              </AlertDialog.Root>
             </DialogContent>
           </Dialog>
         </div>
