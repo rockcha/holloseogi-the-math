@@ -6,6 +6,15 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Essay management follows the workspace palette with square panels. */
+:root .essay-page .essay-panel,
+:root .essay-page button,
+:root .essay-dialog,
+:root .essay-dialog button { border-radius: 0 !important; }
+.essay-short { background: #e0eee4; color: #305c45; }
+.essay-humanities { background: #e9e4f5; color: #66508b; }
+.essay-page a:focus-visible { outline: 2px solid #527b65; outline-offset: 2px; }
+
 @theme {
   --font-sans: Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-display: "Gowun Dodum", sans-serif;

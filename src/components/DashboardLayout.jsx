@@ -11,6 +11,7 @@ const menus = [
   { to: '/classes', label: '수업', icon: BookOpen, children: [['수업 리스트', '/classes'], ['수업 추가하기', '/classes?action=new']] },
   { to: '/attendance', label: '출석', icon: ClipboardCheck, children: [['출석 리스트', '/attendance'], ['출석부 작성하기', '/attendance/new']] },
   { to: '/payments', label: '결제', icon: CreditCard, children: [['결제 리스트', '/payments'], ['수업별 납부 현황', '/payments/classes'], ['결제 내역 추가', '/payments?action=new']] },
+  { to: '/essays', label: '논술', icon: BookOpen, children: [['일정 보기', '/essays'], ['대학 리스트', '/essays/list'], ['학교 추가', '/essays?action=new']] },
 ]
 
 const pageTitles = {
@@ -33,7 +34,12 @@ export default function DashboardLayout() {
           const active = to === '/' ? pathname === '/' : pathname.startsWith(to)
           return <div className="sidebar-group" key={to}>
             <NavLink to={to} end={to === '/'} className={`sidebar-link ${active ? 'is-active' : ''}`}><Icon size={20} strokeWidth={1.7} /><span>{label}</span>{children && <ChevronRight size={15} className={active ? 'rotate-90' : ''} />}</NavLink>
-            {children && active && <div className="sidebar-submenu">{children.map(([text, href]) => <NavLink key={href} to={href} className={`sidebar-sublink ${pathname + search === href ? 'is-selected' : ''}`}>{text}</NavLink>)}</div>}
+            {children && active && <div className="sidebar-submenu">{children.map(([text, href]) => {
+              const selected = to === '/essays'
+                ? new URLSearchParams(search).get('action') === 'new' ? href.endsWith('?action=new') : pathname === href
+                : pathname + search === href
+              return <NavLink key={href} to={href} className={`sidebar-sublink ${selected ? 'is-selected' : ''}`}>{text}</NavLink>
+            })}</div>}
           </div>
         })}</nav>
       </aside>

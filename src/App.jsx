@@ -10,11 +10,16 @@ import AttendancePage from './pages/AttendancePage'
 import AttendanceFormPage from './pages/AttendanceFormPage'
 
 import PaymentsPage from './pages/PaymentsPage'
+import EssaysPage from './pages/EssaysPage'
+import EssayDetailPage from './pages/EssayDetailPage'
 
 export default function App() {
   return <Routes>
     <Route element={<DashboardLayout />}><Route path="/" element={<HomePage />} />
     <Route path="/calendar" element={<CalendarPage />} />
+    <Route path="/essays" element={<EssaysPage />} />
+    <Route path="/essays/list" element={<EssaysPage />} />
+    <Route path="/essays/:essayId" element={<EssayDetailPage />} />
     <Route path="/students" element={<StudentsPage />} />
     <Route path="/classes" element={<ClassesPage />} />
     <Route path="/classes/:classId" element={<ClassDetailPage />} />
