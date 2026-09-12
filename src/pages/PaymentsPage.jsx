@@ -42,6 +42,8 @@ export default function PaymentsPage() {
   const [search, setSearch] = useState('')
   const [historyClass, setHistoryClass] = useState('all')
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [editingPayment, setEditingPayment] = useState(null)
+  const [deletingPayment, setDeletingPayment] = useState(null)
   const [form, setForm] = useState(emptyForm)
   const [studentSearch, setStudentSearch] = useState('')
   const profile = useQuery({ queryKey: ['teacher-profile', user?.id], enabled: Boolean(user), queryFn: async () => {
@@ -70,37 +72,78 @@ export default function PaymentsPage() {
   const cycle = cycleFor(lesson, Number(number))
   const formLesson = classes.find((item) => item.id === form.class_id)
   const formCycles = availableCycles(formLesson, attendance)
+  const originalClass = editingPayment?.class_id === form.class_id
+  const originalStudent = originalClass && editingPayment?.student_id === form.student_id
+  const originalAssignment = originalStudent && editingPayment.cycle_number === form.cycle_number
+  if (originalClass && !formCycles.some((period) => period.number === editingPayment.cycle_number)) {
+    formCycles.push({ number: editingPayment.cycle_number, start: editingPayment.cycle_start, end: editingPayment.cycle_end })
+    formCycles.sort((a, b) => (a.number || 0) - (b.number || 0))
+  }
   const studentMap = new Map(students.map((student) => [student.id, student]))
   const selectedStudent = studentMap.get(form.student_id)
-  const enrolledClasses = classes.filter((item) => item.teacher_id === user?.id && item.class_students.some((member) => member.student_id === form.student_id))
+  const enrolledClasses = classes.filter((item) => item.teacher_id === user?.id && (item.class_students.some((member) => member.student_id === form.student_id) || (originalStudent && item.id === editingPayment.class_id)))
   const searchTerm = studentSearch.trim().toLocaleLowerCase('ko-KR').replaceAll('-', '')
   const matchingStudents = searchTerm ? students.filter((student) => [student.name, student.phone].some((value) => value?.toLocaleLowerCase('ko-KR').replaceAll('-', '').includes(searchTerm))) : []
   const summary = classPaymentSummary(lesson, payments, Number(number))
   const rows = summary.rows.map((row) => ({ ...row, name: studentMap.get(row.id)?.name || '학생 정보 없음' })).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
   const history = payments.filter((payment) => payment.class_id && (showAll || classes.some((item) => item.id === payment.class_id && item.teacher_id === user?.id)) && (historyClass === 'all' || payment.class_id === historyClass) && (studentMap.get(payment.student_id)?.name || '').includes(search.trim())).sort((a, b) => b.paid_on.localeCompare(a.paid_on) || b.created_at.localeCompare(a.created_at))
-  const addPayment = useMutation({ mutationFn: async (values) => {
-    const { error } = await supabase.from('payments').insert({
+  const savePayment = useMutation({ mutationFn: async (values) => {
+    const payload = {
       student_id: values.student_id, amount: Number(values.amount), paid_on: values.paid_on,
-      class_id: values.class_id, cycle_number: classes.find((item) => item.id === values.class_id)?.billing_start_date ? Number(values.cycle_number) : null,
-    })
+      class_id: values.class_id, cycle_number: values.cycle_number === null ? null : classes.find((item) => item.id === values.class_id)?.billing_start_date ? Number(values.cycle_number) : null,
+    }
+    const request = editingPayment
+      ? supabase.from('payments').update(payload).eq('id', editingPayment.id).eq('teacher_id', user.id).select('id').single()
+      : supabase.from('payments').insert(payload)
+    const { error } = await request
     if (error) throw error
   }, onSuccess: async () => {
-    closeAdd()
+    closeDialog()
     setForm(emptyForm())
     await queryClient.invalidateQueries({ queryKey: ['payment-data', user.id] })
-    toast.success('결제 내역을 추가했어요.')
+    toast.success(editingPayment ? '결제 내역을 수정했어요.' : '결제 내역을 추가했어요.')
   }, onError: (error) => toast.error(error.message || '결제를 저장하지 못했어요.') })
 
-  function closeAdd() {
+  const deletePayment = useMutation({ mutationFn: async (payment) => {
+    if (!enabled || payment.teacher_id !== user.id) throw new Error('본인이 등록한 결제만 삭제할 수 있어요.')
+    const { error } = await supabase.from('payments').delete().eq('id', payment.id).eq('teacher_id', user.id).select('id').single()
+    if (error) throw error
+    return payment.id
+  }, onSuccess: async (id) => {
+    queryClient.setQueryData(['payment-data', user.id], (previous) => previous ? {
+      ...previous, payments: previous.payments.filter((payment) => payment.id !== id),
+    } : previous)
+    await queryClient.invalidateQueries({ queryKey: ['payment-data', user.id] })
+    setDeletingPayment(null)
+    toast.success('결제 내역을 삭제했어요.')
+  }, onError: (error) => toast.error(error.message || '결제 내역을 삭제하지 못했어요.') })
+
+  function openDelete(payment) {
+    if (!enabled || payment.teacher_id !== user.id || deletePayment.isPending) return
+    deletePayment.reset()
+    setDeletingPayment(payment)
+  }
+  function closeDialog() {
     setDialogOpen(false)
+    setEditingPayment(null)
+    setForm(emptyForm())
     if (params.get('action') === 'new') {
       const next = new URLSearchParams(params)
       next.delete('action')
       setParams(next, { replace: true })
     }
   }
+  function openEdit(payment) {
+    if (payment.teacher_id !== user.id) return
+    savePayment.reset()
+    setEditingPayment(payment)
+    setStudentSearch('')
+    setForm({ student_id: payment.student_id, class_id: payment.class_id, cycle_number: payment.cycle_number, amount: String(payment.amount), paid_on: payment.paid_on })
+    setDialogOpen(true)
+  }
   function openAdd(studentId = '') {
-    addPayment.reset()
+    setEditingPayment(null)
+    savePayment.reset()
     setStudentSearch('')
     setForm({ ...emptyForm(), ...(studentId && tab === 'cycles' && cycle ? { class_id: lesson.id, cycle_number: currentCycle(lesson), amount: String(lesson.billing_amount) } : {}), student_id: studentId })
     setDialogOpen(true)
@@ -108,17 +151,17 @@ export default function PaymentsPage() {
   function selectStudent(studentId) {
     setForm((value) => ({ ...value, student_id: studentId, class_id: '', cycle_number: 1, amount: '' }))
     setStudentSearch('')
-    addPayment.reset()
+    savePayment.reset()
   }
   function submit(event) {
     event.preventDefault()
-    if (addPayment.isPending) return
+    if (savePayment.isPending) return
     if (!form.student_id || !students.some((item) => item.id === form.student_id)) return toast.error('학생을 선택해 주세요.')
     if (!formLesson || formLesson.teacher_id !== user.id) return toast.error('수강 중인 수업을 선택해 주세요.')
     if (!Number.isInteger(Number(form.amount)) || Number(form.amount) <= 0 || Number(form.amount) > 2147483647) return toast.error('결제 금액은 1~2,147,483,647원 사이의 정수로 입력해 주세요.')
     if (!form.paid_on || form.paid_on > todayDate()) return toast.error('결제일은 오늘 또는 이전 날짜를 선택해 주세요.')
-    if ((!formLesson?.class_students.some((item) => item.student_id === form.student_id) || (formLesson.billing_start_date && !formCycles.some((period) => period.number === Number(form.cycle_number))))) return toast.error('선택한 수업의 참여 학생과 결제 주기를 확인해 주세요.')
-    addPayment.mutate(form)
+    if (!originalAssignment && (!formLesson?.class_students.some((item) => item.student_id === form.student_id) || (formLesson.billing_start_date && (form.cycle_number === null || !formCycles.some((period) => period.number === Number(form.cycle_number)))))) return toast.error('선택한 수업의 참여 학생과 결제 주기를 확인해 주세요.')
+    savePayment.mutate(form)
   }
 
   if (!classId && params.get('classId')) return <Navigate replace to={`/payments/classes/${encodeURIComponent(params.get('classId'))}`} />
@@ -143,7 +186,7 @@ export default function PaymentsPage() {
           {!classes.length && <p className="rounded-2xl bg-white p-12 text-center">등록된 수업이 없어요. <Link className="underline" to="/classes">수업 추가하기</Link></p>}
         </section> : tab === 'cycles' ? <section className="rounded-lg border border-[#e1e7df] bg-white p-5 sm:p-7">
           <h1 className="dashboard-page-title inline-page-title mb-6">{lesson?.name || '수업을 찾을 수 없어요'}</h1>
-          {lesson && <div className="mt-6 grid gap-4 sm:grid-cols-[minmax(0,1fr)_200px]"><div className="space-y-2"><Label htmlFor="cycle-number">단위기간 선택</Label><Select value={lessonCycles.length ? String(number) : ''} disabled={!lessonCycles.length} onValueChange={setCycleNumber}><SelectTrigger id="cycle-number" className="w-full data-[size=default]:h-11"><SelectValue placeholder="선택 가능한 단위기간이 없어요" /></SelectTrigger><SelectContent position="popper">{lessonCycles.map((period) => <SelectItem key={period.number} value={String(period.number)}>{period.start} ~ {period.end}{period.number === currentCycle(lesson) ? ' (현재)' : ''}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label htmlFor="payment-status">학생 보기</Label><select className={selectStyle} id="payment-status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">모든 학생</option>{['완납', '일부 납부', '미납'].map((value) => <option key={value}>{value}</option>)}</select></div></div>}
+          {lesson && <div className="mt-6 grid gap-4 sm:grid-cols-[minmax(0,1fr)_200px]"><div className="space-y-2"><Label htmlFor="cycle-number">단위기간 선택</Label><Select value={lessonCycles.length ? String(number) : ''} disabled={!lessonCycles.length} onValueChange={setCycleNumber}><SelectTrigger id="cycle-number" className="w-full data-[size=default]:h-11"><SelectValue placeholder="선택 가능한 단위기간이 없어요" /></SelectTrigger><SelectContent position="popper">{lessonCycles.map((period) => <SelectItem key={period.number ?? 'none'} value={String(period.number ?? 'none')}>{period.number === null ? '단위기간 미지정 (기존 내역)' : `${period.start} ~ ${period.end}`}{period.number === currentCycle(lesson) ? ' (현재)' : ''}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label htmlFor="payment-status">학생 보기</Label><select className={selectStyle} id="payment-status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">모든 학생</option>{['완납', '일부 납부', '미납'].map((value) => <option key={value}>{value}</option>)}</select></div></div>}
           {!lesson ? <p className="py-12 text-center">삭제되었거나 접근할 수 없는 수업이에요.</p> : !lesson.billing_start_date ? <p className="py-12 text-center">결제 시작일을 먼저 설정해 주세요. <Link className="underline" to={`/classes/${lesson.id}`}>수업 설정</Link></p> : !cycle ? <p className="py-8 text-center">유효한 주기 번호(1~10,000)를 입력하고 수업 결제 설정을 확인해 주세요.</p> : <>
             <div className="my-6 border-y border-[#e1e7df] py-5">
               <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-[#758078]">단위 수강료 <span className="ml-2 font-medium text-[#26372f]">{won(lesson.billing_amount)}</span></p><span role="status" className={`inline-flex items-center gap-1.5 text-xs font-medium ${summary.unpaid ? 'text-[#9a4936]' : 'text-[#527b65]'}`}>{summary.total && !summary.unpaid ? <CheckCircle2 className="h-4 w-4" /> : <CircleAlert className="h-4 w-4" />}{summary.label}</span></div>
@@ -156,13 +199,13 @@ export default function PaymentsPage() {
           
           <div className="mb-5 grid gap-3 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="history-search">학생 이름 검색</Label><Input id="history-search" className="h-11" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="학생 이름" /></div><div className="space-y-2"><Label htmlFor="history-class">수업 필터</Label><select id="history-class" className={selectStyle} value={historyClass} onChange={(event) => setHistoryClass(event.target.value)}><option value="all">모든 수업</option>{visibleClasses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div></div>
           <p className="mb-4 text-sm font-bold">조회 {history.length}건</p>
-          <div className="overflow-x-auto"><table className="w-full min-w-[640px] text-left text-sm"><thead className="border-b text-[#758078]"><tr>{['결제일', '학생', '수업 / 주기', '결제 금액'].map((title) => <th className="p-3" key={title}>{title}</th>)}</tr></thead><tbody>{history.map((payment) => <tr className="border-b border-[#edf0eb]" key={payment.id}><td className="p-3">{payment.paid_on}</td><td className="p-3 font-bold">{studentMap.get(payment.student_id)?.name || '학생 정보 없음'}</td><td className="p-3">{payment.class_id ? <>{classes.find((item) => item.id === payment.class_id)?.name || '수업 정보 없음'}{payment.cycle_number !== null && <span className="mt-1 block text-xs text-[#758078]">{payment.cycle_start} ~ {payment.cycle_end}</span>}</> : '일반 결제'}</td><td className="p-3">{won(payment.amount)}</td></tr>)}</tbody></table></div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[640px] text-left text-sm"><thead className="border-b text-[#758078]"><tr>{['결제일', '학생', '수업 / 주기', '결제 금액', '관리'].map((title) => <th className="p-3" key={title}>{title}</th>)}</tr></thead><tbody>{history.map((payment) => <tr className="border-b border-[#edf0eb]" key={payment.id}><td className="p-3">{payment.paid_on}</td><td className="p-3 font-bold">{studentMap.get(payment.student_id)?.name || '학생 정보 없음'}</td><td className="p-3">{payment.class_id ? <>{classes.find((item) => item.id === payment.class_id)?.name || '수업 정보 없음'}{payment.cycle_number !== null && <span className="mt-1 block text-xs text-[#758078]">{payment.cycle_start} ~ {payment.cycle_end}</span>}</> : '일반 결제'}</td><td className="p-3">{won(payment.amount)}</td><td className="p-3">{payment.teacher_id === user.id && <div className="flex items-center gap-2"><Button variant="outline" size="sm" aria-label={`${studentMap.get(payment.student_id)?.name || '학생'} ${payment.paid_on} 결제 내역 수정`} onClick={() => openEdit(payment)}>수정</Button><Button variant="destructive" size="sm" disabled={deletePayment.isPending} aria-label={`${studentMap.get(payment.student_id)?.name || '학생'} ${payment.paid_on} 결제 내역 삭제`} onClick={() => openDelete(payment)}>삭제</Button></div>}</td></tr>)}</tbody></table></div>
           {!history.length && <p className="py-12 text-center text-sm text-[#758078]">결제 내역이 없어요.</p>}
         </section>}
       </>}
-      <Dialog open={dialogOpen || params.get('action') === 'new'} onOpenChange={(open) => { if (!addPayment.isPending && !open) closeAdd() }}><DialogContent className="max-h-[calc(100dvh-32px)] overflow-y-auto rounded-xl p-6 sm:max-w-3xl sm:p-8"><DialogHeader><DialogTitle className="font-display text-2xl font-semibold">결제 내역 추가</DialogTitle><DialogDescription>학생을 검색한 뒤 수강 중인 수업을 선택하세요. 수업의 결제 금액이 자동으로 입력돼요.</DialogDescription></DialogHeader>
+      <Dialog open={dialogOpen || params.get('action') === 'new'} onOpenChange={(open) => { if (!savePayment.isPending && !open) closeDialog() }}><DialogContent className="max-h-[calc(100dvh-32px)] overflow-y-auto rounded-xl p-6 sm:max-w-3xl sm:p-8"><DialogHeader><DialogTitle className="font-display text-2xl font-semibold">{editingPayment ? '결제 내역 수정' : '결제 내역 추가'}</DialogTitle><DialogDescription>{editingPayment ? '수정할 내용을 입력하고 저장하세요. 변경 사항은 납부 현황에 반영돼요.' : '학생을 검색한 뒤 수강 중인 수업을 선택하세요. 수업의 결제 금액이 자동으로 입력돼요.'}</DialogDescription></DialogHeader>
         <form className="mt-2 space-y-6" onSubmit={submit}>
-          <fieldset className="grid gap-x-6 gap-y-5 sm:grid-cols-2" disabled={addPayment.isPending || !enabled || !dataQuery.data}>
+          <fieldset className="grid gap-x-6 gap-y-5 sm:grid-cols-2" disabled={savePayment.isPending || !enabled || !dataQuery.data}>
             <div className="space-y-2 border-b border-[#e1e7df] pb-5 sm:col-span-2">
               {selectedStudent ? <><Label>선택한 학생</Label><div className="flex items-center justify-between gap-3 border border-[#dce4dc] bg-[#f7f9f5] p-4"><div><strong>{selectedStudent.name}</strong></div><Button type="button" size="sm" variant="outline" onClick={() => selectStudent('')}>학생 변경</Button></div></> : <>
                 <Label htmlFor="add-student-search">학생 검색 *</Label>
@@ -170,15 +213,34 @@ export default function PaymentsPage() {
                 <div className="max-h-40 overflow-y-auto border border-[#e1e7df]" aria-label="학생 검색 결과">{matchingStudents.map((student) => <button className="flex w-full items-center justify-between gap-3 border-b border-[#edf0eb] px-4 py-3 text-left text-sm hover:bg-[#f0f5ef] focus-visible:bg-[#f0f5ef]" type="button" key={student.id} onClick={() => selectStudent(student.id)}><span><strong className="block">{student.name}</strong><span className="text-xs text-[#758078]">{student.phone || '연락처 없음'}</span></span><span className="text-xs font-bold text-[#305c45]">선택</span></button>)}{!matchingStudents.length && <p className="p-4 text-sm text-[#758078]" role="status">{searchTerm ? '검색 결과가 없어요.' : '이름이나 연락처를 입력해 학생을 찾아 주세요.'}</p>}</div>
               </>}
             </div>
-            <div className="space-y-2"><Label htmlFor="add-class">수강 중인 수업 *</Label><Select required value={form.class_id} disabled={!selectedStudent || addPayment.isPending} onValueChange={(classId) => { const item = enrolledClasses.find((item) => item.id === classId); setForm((previous) => ({ ...previous, class_id: classId, cycle_number: currentCycle(item), amount: item ? String(item.billing_amount) : '' })) }}><SelectTrigger id="add-class" className="w-full data-[size=default]:h-11"><SelectValue placeholder={selectedStudent ? '수업 선택' : '학생을 먼저 선택해 주세요'} /></SelectTrigger><SelectContent position="popper">{enrolledClasses.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>{selectedStudent && !enrolledClasses.length && <p className="text-xs text-[#758078]">수강 중인 수업이 없어요. 수업에 학생을 먼저 추가해 주세요.</p>}</div>
-            <div className="space-y-2"><Label htmlFor="add-cycle">단위기간 선택{formLesson?.billing_start_date ? ' *' : ''}</Label><Select value={formCycles.length ? String(form.cycle_number) : ''} disabled={addPayment.isPending || !formCycles.length} onValueChange={(value) => setForm((previous) => ({ ...previous, cycle_number: Number(value) }))}><SelectTrigger id="add-cycle" className="w-full data-[size=default]:h-11"><SelectValue placeholder={!formLesson ? '수업을 먼저 선택해 주세요' : !formLesson.billing_start_date ? '단위기간 미지정' : '선택 가능한 단위기간이 없어요'} /></SelectTrigger><SelectContent position="popper">{formCycles.map((period) => <SelectItem key={period.number} value={String(period.number)}>{period.start} ~ {period.end}{period.number === currentCycle(formLesson) ? ' · 현재 단위' : ''}</SelectItem>)}</SelectContent></Select>{formLesson && !formLesson.billing_start_date && <p className="text-xs text-[#758078]">단위기간 없이 저장되며, 단위별 납부 현황에는 포함되지 않아요.</p>}</div>
+            <div className="space-y-2"><Label htmlFor="add-class">수강 중인 수업 *</Label><Select required value={form.class_id} disabled={!selectedStudent || savePayment.isPending} onValueChange={(classId) => { const item = enrolledClasses.find((item) => item.id === classId); setForm((previous) => ({ ...previous, class_id: classId, cycle_number: currentCycle(item), amount: item ? String(item.billing_amount) : '' })) }}><SelectTrigger id="add-class" className="w-full data-[size=default]:h-11"><SelectValue placeholder={selectedStudent ? '수업 선택' : '학생을 먼저 선택해 주세요'} /></SelectTrigger><SelectContent position="popper">{enrolledClasses.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>{selectedStudent && !enrolledClasses.length && <p className="text-xs text-[#758078]">수강 중인 수업이 없어요. 수업에 학생을 먼저 추가해 주세요.</p>}</div>
+            <div className="space-y-2"><Label htmlFor="add-cycle">단위기간 선택{formLesson?.billing_start_date ? ' *' : ''}</Label><Select value={formCycles.length ? String(form.cycle_number ?? 'none') : ''} disabled={savePayment.isPending || !formCycles.length} onValueChange={(value) => setForm((previous) => ({ ...previous, cycle_number: value === 'none' ? null : Number(value) }))}><SelectTrigger id="add-cycle" className="w-full data-[size=default]:h-11"><SelectValue placeholder={!formLesson ? '수업을 먼저 선택해 주세요' : !formLesson.billing_start_date ? '단위기간 미지정' : '선택 가능한 단위기간이 없어요'} /></SelectTrigger><SelectContent position="popper">{formCycles.map((period) => <SelectItem key={period.number ?? 'none'} value={String(period.number ?? 'none')}>{period.number === null ? '단위기간 미지정 (기존 내역)' : `${period.start} ~ ${period.end}`}{period.number === currentCycle(formLesson) ? ' · 현재 단위' : ''}</SelectItem>)}</SelectContent></Select>{formLesson && !formLesson.billing_start_date && <p className="text-xs text-[#758078]">단위기간 없이 저장되며, 단위별 납부 현황에는 포함되지 않아요.</p>}</div>
             <div className="space-y-2"><Label htmlFor="add-amount">결제 금액 (원) *</Label><Input id="add-amount" className="h-11" type="number" min="1" max="2147483647" step="1" required value={form.amount} onChange={(event) => setForm((value) => ({ ...value, amount: event.target.value }))} /></div>
             <div className="space-y-2"><Label htmlFor="add-date">결제일 *</Label><Input id="add-date" className="h-11" type="date" required max={todayDate()} value={form.paid_on} onChange={(event) => setForm((value) => ({ ...value, paid_on: event.target.value }))} /></div>
           </fieldset>
-          {addPayment.isError && <p role="alert" className="text-sm text-[#a95848]">{addPayment.error.message}</p>}
-          <DialogFooter className="mx-0 mb-0 mt-6 rounded-none border-t bg-transparent px-0 pb-0 pt-5"><Button type="button" variant="outline" disabled={addPayment.isPending} onClick={() => closeAdd()}>취소</Button><Button type="submit" className="bg-[#305c45] text-white" disabled={addPayment.isPending || !enabled || !dataQuery.data || !selectedStudent || !form.class_id || (formLesson?.billing_start_date && !formCycles.length)}>{addPayment.isPending ? '저장 중...' : '결제 내역 저장'}</Button></DialogFooter>
+          {savePayment.isError && <p role="alert" className="text-sm text-[#a95848]">{savePayment.error.message}</p>}
+          <DialogFooter className="mx-0 mb-0 mt-6 rounded-none border-t bg-transparent px-0 pb-0 pt-5"><Button type="button" variant="outline" disabled={savePayment.isPending} onClick={() => closeDialog()}>취소</Button><Button type="submit" className="bg-[#305c45] text-white" disabled={savePayment.isPending || !enabled || !dataQuery.data || !selectedStudent || !form.class_id || (formLesson?.billing_start_date && !formCycles.length)}>{savePayment.isPending ? '저장 중...' : '결제 내역 저장'}</Button></DialogFooter>
         </form>
       </DialogContent></Dialog>
+      <Dialog open={Boolean(deletingPayment)} onOpenChange={(open) => { if (!open && !deletePayment.isPending) setDeletingPayment(null) }}>
+        <DialogContent showCloseButton={!deletePayment.isPending}>
+          <DialogHeader>
+            <DialogTitle>결제 내역 삭제</DialogTitle>
+            <DialogDescription>이 결제 내역을 삭제할까요? 삭제하면 되돌릴 수 없으며, 납부 현황에서도 해당 금액이 제외돼요.</DialogDescription>
+          </DialogHeader>
+          {deletingPayment && <div className="space-y-1 rounded-lg bg-[#f7f9f5] p-4 text-sm">
+            <p className="font-semibold">{studentMap.get(deletingPayment.student_id)?.name || '학생 정보 없음'} · {won(deletingPayment.amount)}</p>
+            <p>{classes.find((item) => item.id === deletingPayment.class_id)?.name || '수업 정보 없음'}</p>
+            <p>결제일: {deletingPayment.paid_on}</p>
+            {deletingPayment.cycle_start && <p>단위기간: {deletingPayment.cycle_start} ~ {deletingPayment.cycle_end}</p>}
+          </div>}
+          {deletePayment.isError && <p role="alert" className="text-sm text-[#a95848]">{deletePayment.error.message || '결제 내역을 삭제하지 못했어요.'}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" autoFocus disabled={deletePayment.isPending} onClick={() => setDeletingPayment(null)}>취소</Button>
+            <Button type="button" variant="destructive" disabled={!deletingPayment || !enabled || deletePayment.isPending} onClick={() => { if (deletingPayment && !deletePayment.isPending) deletePayment.mutate(deletingPayment) }}>{deletePayment.isPending ? '삭제 중...' : '삭제'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
   </div>
 }
