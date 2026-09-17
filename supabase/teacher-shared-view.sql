@@ -15,5 +15,5 @@ create policy "Teachers read all attendance records" on public.attendance_record
 using (public.current_user_is_teacher());
 drop policy if exists "Teachers read all class payments" on public.payments;
 create policy "Teachers read all class payments" on public.payments for select to authenticated
-using (class_id is not null and public.current_user_is_teacher());
+using (public.current_user_is_teacher());
 commit;

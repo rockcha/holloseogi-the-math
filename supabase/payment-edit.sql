@@ -7,8 +7,8 @@ grant update (student_id, class_id, cycle_number, amount, paid_on) on public.pay
 drop policy if exists "Teachers update own payments" on public.payments;
 create policy "Teachers update own payments" on public.payments
 for update to authenticated
-using (teacher_id = auth.uid() and public.current_user_is_teacher())
-with check (teacher_id = auth.uid() and public.current_user_is_teacher());
+using (public.current_user_is_teacher())
+with check (public.current_user_is_teacher());
 
 create or replace function public.prepare_payment_edit()
 returns trigger language plpgsql set search_path = public as $$

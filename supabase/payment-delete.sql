@@ -6,6 +6,6 @@ grant delete on public.payments to authenticated;
 drop policy if exists "Teachers delete own payments" on public.payments;
 create policy "Teachers delete own payments" on public.payments
 for delete to authenticated
-using (teacher_id = auth.uid() and public.current_user_is_teacher());
+using (public.current_user_is_teacher());
 
 commit;
